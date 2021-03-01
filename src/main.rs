@@ -1,4 +1,11 @@
-#![allow(unused_imports)]
+// Shell 1:
+// cargo run
+//
+// Shell 2:
+// time echo foo | socat -t30 - TCP:localhost:1234
+//
+// Set WORKER_PRIORITY to 0 and you'll see ^^^ being very slow
+// Set it to 10 and you'll see a bounded slowdown (from 800ms to 1100ms on my machine).
 
 use std::io::Result;
 use std::sync::atomic::Ordering;
@@ -6,7 +13,7 @@ use std::sync::{atomic::AtomicUsize, Arc};
 use std::{thread, time};
 use tokio::io::{copy, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::runtime::Handle;
+use tokio::runtime::{self, Handle};
 
 const NUM_WORKERS: usize = 60;
 const WORKER_PRIORITY: i32 = 10;
@@ -17,7 +24,7 @@ async fn process_socket(mut socket: TcpStream) -> Result<()> {
     let (mut reader, mut writer) = socket.split();
 
     writer.write_all(b"some heavy computing...").await?;
-    heavy_stuff();
+    heavy_stuff(get_count().await);
     writer.write_all(b"done. echoing\n").await?;
 
     copy(&mut reader, &mut writer).await?;
@@ -25,23 +32,25 @@ async fn process_socket(mut socket: TcpStream) -> Result<()> {
     Ok(())
 }
 
-fn worker(i: usize, counters: Arc<Vec<AtomicUsize>>) {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
-    rt.block_on(aworker(i, counters));
+fn worker() {
+    let rt = runtime::Builder::new_current_thread().build().unwrap();
+    rt.block_on(aworker());
 }
 
-async fn aworker(i: usize, counters: Arc<Vec<AtomicUsize>>) {
+async fn aworker() {
     loop {
-        heavy_stuff();
-        counters[i].fetch_add(1, Ordering::Relaxed);
+        let count = get_count().await;
+        heavy_stuff(count);
     }
 }
 
-fn heavy_stuff() -> u64 {
+async fn get_count() -> u64 {
+    20000000
+}
+
+fn heavy_stuff(count: u64) -> u64 {
     let mut acc = 0;
-    for _i in 0..20000000 {
+    for _i in 0..count {
         acc += 1;
     }
     acc
@@ -53,61 +62,21 @@ fn set_current_thread_priority(prio: i32) {
     unsafe { libc::setpriority(0, 0, prio) };
 }
 
-async fn reporter(counters: Arc<Vec<AtomicUsize>>) {
-    loop {
-        let snapshot = counters
-            .iter()
-            .map(|i| i.load(Ordering::Relaxed))
-            .collect::<Vec<_>>();
-
-        let living = snapshot.iter().filter(|i| **i > 0).count();
-        if living == counters.len() {
-            print!("All workers had a chance to run at least once");
-        } else if living < counters.len() / 2 {
-            print!("living: ");
-            for (i, &n) in snapshot.iter().enumerate() {
-                if n > 0 {
-                    print!("{}, ", i);
-                }
-            }
-        } else {
-            print!("starved: ");
-            for (i, &n) in snapshot.iter().enumerate() {
-                if n == 0 {
-                    print!("{}, ", i);
-                }
-            }
-        }
-
-        println!();
-        thread::sleep(time::Duration::from_secs(2));
-    }
-}
-
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:1234").await?;
 
-    let counters = Arc::new(
-        std::iter::repeat_with(|| AtomicUsize::new(0))
-            .take(NUM_WORKERS)
-            .collect::<Vec<_>>(),
-    );
-    tokio::spawn(reporter(counters.clone()));
-
     let rt = Handle::current();
-    for i in 0..NUM_WORKERS {
-        let counters = counters.clone();
+    for _i in 0..NUM_WORKERS {
         let res = rt.spawn_blocking(move || {
             set_current_thread_priority(WORKER_PRIORITY);
-            worker(i, counters)
+            worker()
         });
 
         rt.spawn(res); // force polling the blocking thread
     }
 
     loop {
-        println!("looping in main");
         let (socket, _) = listener.accept().await?;
         process_socket(socket).await?;
     }
