@@ -23,8 +23,9 @@ async fn process_socket(mut socket: TcpStream) -> Result<()> {
 
     let (mut reader, mut writer) = socket.split();
 
-    writer.write_all(b"some heavy computing...").await?;
-    heavy_stuff(get_count().await);
+    //writer.write_all(b"some heavy computing...").await?;
+    writer.write_all(b"processing ping...").await?;
+    //heavy_stuff(get_count().await);
     writer.write_all(b"done. echoing\n").await?;
 
     copy(&mut reader, &mut writer).await?;
@@ -32,12 +33,9 @@ async fn process_socket(mut socket: TcpStream) -> Result<()> {
     Ok(())
 }
 
-fn worker() {
-    let rt = runtime::Builder::new_current_thread().build().unwrap();
-    rt.block_on(aworker());
-}
 
 async fn aworker() {
+    println!("Running a worker job");
     loop {
         let count = get_count().await;
         heavy_stuff(count);
@@ -56,24 +54,15 @@ fn heavy_stuff(count: u64) -> u64 {
     acc
 }
 
-fn set_current_thread_priority(prio: i32) {
-    // on linux setpriority sets the current thread's priority
-    // (as opposed to the current process).
-    unsafe { libc::setpriority(0, 0, prio) };
-}
-
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:1234").await?;
 
-    let rt = Handle::current();
+    // Model running workers on the main tokio thread
     for _i in 0..NUM_WORKERS {
-        let res = rt.spawn_blocking(move || {
-            set_current_thread_priority(WORKER_PRIORITY);
-            worker()
+        tokio::task::spawn(async {
+            aworker().await
         });
-
-        rt.spawn(res); // force polling the blocking thread
     }
 
     loop {
