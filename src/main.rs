@@ -11,7 +11,7 @@ use std::io::Result;
 use std::sync::atomic::Ordering;
 use std::sync::{atomic::AtomicUsize, Arc};
 use std::{thread, time};
-use tokio::io::{copy, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{self, Handle};
 
@@ -21,18 +21,29 @@ const WORKER_PRIORITY: i32 = 10;
 async fn process_socket(mut socket: TcpStream) -> Result<()> {
     println!("processing socket");
 
-    let (mut reader, mut writer) = socket.split();
+    let (reader, mut writer) = socket.split();
 
-    //writer.write_all(b"some heavy computing...").await?;
-    writer.write_all(b"processing ping...").await?;
-    //heavy_stuff(get_count().await);
-    writer.write_all(b"done. echoing\n").await?;
+    // prented to parse http request headers, stop on empty line.
+    let mut lines = BufReader::new(reader).lines();
+    while let Some(line) = lines.next_line().await? {
+        if line.len() == 0 {
+            break;
+        }
+    }
 
-    copy(&mut reader, &mut writer).await?;
+    // heavy_stuff(get_count().await);
+    writer
+        .write_all(
+            b"HTTP/1.1 200 OK\n\
+                            Connection: close\n\
+                            Content-size: 3\n\
+                            \n\
+                            ok\n",
+        )
+        .await?;
 
     Ok(())
 }
-
 
 async fn aworker() {
     println!("Running a worker job");
@@ -63,9 +74,7 @@ async fn main() -> Result<()> {
 
     // Model running workers on the main tokio thread
     for _i in 0..NUM_WORKERS {
-        tokio::task::spawn(async {
-            aworker().await
-        });
+        tokio::task::spawn(async { aworker().await });
     }
 
     loop {
