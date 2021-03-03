@@ -8,9 +8,6 @@
 // Set it to 10 and you'll see a bounded slowdown (from 800ms to 1100ms on my machine).
 
 use std::io::Result;
-use std::sync::atomic::Ordering;
-use std::sync::{atomic::AtomicUsize, Arc};
-use std::{thread, time};
 use tokio::io::{copy, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{self, Handle};
